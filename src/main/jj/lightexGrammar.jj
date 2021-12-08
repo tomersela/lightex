@@ -1,0 +1,195 @@
+options {
+  DEBUG_PARSER = false;
+}
+PARSER_BEGIN(LightexParser)
+package com.tomersela.lightex.parser;
+import com.tomersela.lightex.parser.exceptions.InvalidSymbol;
+import com.tomersela.lightex.parser.exceptions.EmptyCode;
+import com.tomersela.lightex.parser.exceptions.LightexParseException;
+import com.tomersela.lightex.parser.exceptions.UnexpectedEndOfCode;
+import com.tomersela.lightex.ast.*;
+import java.io.StringReader;
+import java.math.BigDecimal;
+import java.util.LinkedList;
+
+public class LightexParser {
+
+    final private LinkedList<Val> vals = new LinkedList<>();
+    final private LinkedList<PlaceHolder> placeHolders = new LinkedList<>();
+
+    public static LightexAst parse(String code) throws LightexParseException {
+        try {
+            LightexParser LightexParser = new LightexParser(new StringReader(code));
+            Exp expression = LightexParser.start();
+            return new LightexAst(expression, LightexParser.vals, LightexParser.placeHolders);
+        } catch (ParseException pe) {
+            if (pe.currentToken.next != null && pe.tokenImage[pe.currentToken.next.kind].equals("<EOF>")) {
+                throw new UnexpectedEndOfCode(
+                    pe.currentToken.next.beginLine,
+                    pe.currentToken.next.beginColumn,
+                    pe.currentToken.next.endLine,
+                    pe.currentToken.next.endColumn);
+            }
+            throw new InvalidSymbol(
+                    pe.currentToken.next.image,
+                    pe.currentToken.next.beginLine,
+                    pe.currentToken.next.beginColumn,
+                    pe.currentToken.next.endLine,
+                    pe.currentToken.next.endColumn
+            );
+        }
+    }
+
+    public LinkedList<Val> getVals() {
+      return vals;
+    }
+}
+PARSER_END(LightexParser)
+
+SKIP: {
+  " " |
+  "\t" |
+  "\n" |
+  "\r" |
+  <"/*" (~[])* "*/">
+}
+SPECIAL_TOKEN :
+{
+  <SINGLE_LINE_COMMENT: "//" (~["\n","\r"])* ("\n"|"\r"|"\r\n")>
+}
+TOKEN: {
+ <LPAREN : "(" > |
+ <RPAREN : ")" > |
+ <PLUS : "+" > |
+ <MINUS : "-" > |
+ <TIMES : "*" > |
+ <MOD : "%" > |
+ <POW : "^" > |
+ <DIV : "/" >
+}
+
+TOKEN: { <NUMBER : <DIGITS> | <DIGITS> "." <DIGITS> | <DIGITS> "." | "." <DIGITS> > }
+TOKEN: { <#DIGITS : (["0"-"9"])+ > }
+TOKEN [IGNORE_CASE]: { <BOOLEAN: "true" | "false"> }
+TOKEN [IGNORE_CASE]: { <AND: "and"> }
+TOKEN [IGNORE_CASE]: { <OR: "or"> }
+TOKEN: { <EXCLAMATION: "!"> }
+TOKEN: { <EQUAL: "="> }
+TOKEN: { <GREATER: ">"> }
+TOKEN: { <GREATER_EQUAL: ">="> }
+TOKEN: { <LESS: "<"> }
+TOKEN: { <LESS_EQUAL: "<="> }
+TOKEN: { <NOT_EQUAL: "!="> }
+TOKEN: { < ID: ["a"-"z","A"-"Z","_"] ( ["a"-"z","A"-"Z","_","0"-"9"] )* > }
+TOKEN: { < COMMA: "," > }
+TOKEN: {
+  <STRING: "\"" (
+    ~["\"","\n","\r"] |
+    "\\" (["n","t","b","r","f","\\","\'","\""] | ["0"-"7"] (["0"-"7"])? | ["0"-"3"] ["0"-"7"] ["0"-"7"])
+  )* "\"">
+}
+TOKEN: {
+  <STRING_QUOTE: "\'" (
+    ~["\'","\n","\r"] |
+    "\\" (["n","t","b","r","f","\\","\'","\""] | ["0"-"7"] (["0"-"7"])? | ["0"-"3"] ["0"-"7"] ["0"-"7"])
+  )* "\'">
+}
+
+<DEFAULT> MORE: {
+  "{{": WithinPlaceHolder
+//  <LPLACE_HOLDER: "{{"> |
+//  <RPLACE_HOLDER: "}}">
+}
+<WithinPlaceHolder> TOKEN: {
+  <RPLACE_HOLDER: "}}">: DEFAULT
+}
+
+<WithinPlaceHolder> MORE :
+{
+  <~["\n","\r", "}"]>
+}
+
+Exp start() throws EmptyCode: { Exp e; } {
+    e = expression() <EOF> { return e; } |
+    <EOF> { throw new EmptyCode(); }
+}
+Exp expression(): { Exp e; } {
+  e = or() { return e; }
+}
+
+Exp or(): { Exp left; Exp right; Token n; } {
+  left = and() (
+    n = <OR> right = and() { left = new Or(left, right, n); }
+  )* { return left; }
+}
+
+Exp and(): { Exp left; Exp right; Token n; } {
+  left = equality() (
+    n = <AND> right = equality() { left = new And(left, right, n); }
+  )* { return left; }
+}
+
+Exp equality(): { Exp left; Exp right; Token n; } {
+  left = relational() (
+    n = <EQUAL> right = relational() { left = new Equal(left, right, n); } |
+    n = <NOT_EQUAL>  right = relational() { left = new NotEqual(left, right, n); }
+  )* { return left; }
+}
+
+Exp relational(): { Exp left; Exp right; Token n; } {
+  left = addLike() (
+    n = <GREATER> right = addLike() { left = new Greater(left, right, n); } |
+    n = <GREATER_EQUAL>  right = addLike() { left = new GreaterEqual(left, right, n); } |
+    n = <LESS>  right = addLike() { left = new Less(left, right, n); } |
+    n = <LESS_EQUAL>  right = addLike() { left = new LessEqual(left, right, n); }
+  )* { return left; }
+}
+
+Exp addLike(): { Exp left; Exp right; Token n; } {
+  left = multLike() (
+    n = <PLUS> right = multLike() { left = new Add(left, right, n); } |
+    n = <MINUS> right = multLike() { left = new Sub(left, right, n); }
+  )* { return left; }
+}
+
+Exp multLike(): { Exp left; Exp right; Token n; } {
+  left = pow() (
+    n = <DIV> right = pow() { left = new Div(left, right, n); } |
+    n = <TIMES> right = pow() { left = new Mul(left, right, n); } |
+    n = <MOD> right = pow() { left = new Mod(left, right, n); }
+  )* { return left; }
+}
+
+Exp pow(): { Exp left; Exp right; Token n; } {
+  left = atom() (
+    LOOKAHEAD(1) n = <POW> right = pow() { left = new Pow(left, right, n); }
+  )? { return left; }
+}
+
+Exp atom(): { String name; Exp e; Token n; Params p = null; } {
+  n = <NUMBER> { return new Num(new BigDecimal(n.image), n); } |
+  n = <BOOLEAN> { return new Bool(Boolean.parseBoolean(n.image), n); } |
+  n = <MINUS> e = atom() { return new UnaryMinus(e, n); } |
+  n = <EXCLAMATION> e = atom() { return new Not(e, n); } |
+  <LPAREN> e = expression() <RPAREN> { return e; } |
+  n = <STRING> { return Text.fromQuoted(n.image, n); } |
+  n = <STRING_QUOTE> { return Text.fromQuoted(n.image, n); } |
+  n = <RPLACE_HOLDER> {
+    PlaceHolder placeHolder = PlaceHolder.fromWrapped(n.image, n);
+    placeHolders.add(placeHolder);
+    return placeHolder;
+  } |
+  n = <ID> { name = n.image; } (p = params())? {
+    if (p == null) {
+        Val v = new Val(name, n);
+        vals.add(v);
+        return v;
+    } else {
+        return new FunctionCall(name, p, n);
+    }
+  }
+}
+
+Params params() : { Exp e; Token n; LinkedList<Exp> params = new LinkedList<>(); } {
+  <LPAREN> (e = expression() { params.add(e); } (<COMMA> e = expression() { params.add(e); })*)? <RPAREN> {return new Params(params.toArray(new Exp[0])); }
+}
