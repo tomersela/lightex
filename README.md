@@ -1,2 +1,2 @@
-# lightex
+# lightEx
 Expression evaluator for java
